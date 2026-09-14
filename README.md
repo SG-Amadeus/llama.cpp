@@ -1,5 +1,40 @@
 # llama.cpp
 
+> ## SG-Amadeus Vulkan branch
+>
+> This branch presents a minimal `MUL_MAT_ID` / `mul_mm_cm2` tail optimization.
+> The PR branch is [`vulkan/mmid-bn64-tail32`](https://github.com/SG-Amadeus/llama.cpp/tree/vulkan/mmid-bn64-tail32).
+>
+> Only three lines change, with no new variable:
+>
+> ```diff
+> -const uint BNover2 = enable_smaller_matrices ? (BN / 2) : BN;
+> +const uint BNover2 = BN / 2;
+> -const uint BNover4 = enable_smaller_matrices ? (BN / 4) : BN;
+> +const uint BNover4 = enable_smaller_matrices ? (BN / 4) : (BN / 2);
+>
+> -        if (enable_smaller_matrices && ic * BN + BNover2 >= _ne1) {
+> +        if (ic * BN + BNover2 >= _ne1) {
+> ```
+>
+> So `BN/2` is now the default, while `BN/4` stays gated by `enable_smaller_matrices`:
+>
+> ```text
+> BN/2: always available
+> BN/4: only when enable_smaller_matrices is true
+> ```
+>
+> | path | before | after |
+> | --- | --- | --- |
+> | MMID `l` BN=128 flag=1 | `/4=32`, `/2=64` | unchanged |
+> | MMID `s` BN=64 flag=0 | full 64 | new `/2=32` |
+> | MMID `m` BN=64 flag=0 | full 64 | new `/2=32` (selector-unreachable) |
+> | regular `MUL_MAT` / `p.N` | original | unchanged |
+> | vec path `B<=8` | vec | unchanged |
+> | selector / Q / G / AWork | original | unchanged |
+>
+> The C++ candidates, `BN/4` branch condition, and `p.N` path are unchanged. The `p.N` path is unaffected because its condition still has the `enable_smaller_matrices` gate.
+
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 <div align="center">
