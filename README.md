@@ -1,39 +1,83 @@
 # llama.cpp
 
-> ## SG-Amadeus Vulkan branch
->
-> This branch presents a minimal `MUL_MAT_ID` / `mul_mm_cm2` tail optimization.
-> The PR branch is [`vulkan/mmid-bn64-tail32`](https://github.com/SG-Amadeus/llama.cpp/tree/vulkan/mmid-bn64-tail32).
->
-> Only three lines change, with no new variable:
->
-> ```diff
-> -const uint BNover2 = enable_smaller_matrices ? (BN / 2) : BN;
-> +const uint BNover2 = BN / 2;
-> -const uint BNover4 = enable_smaller_matrices ? (BN / 4) : BN;
-> +const uint BNover4 = enable_smaller_matrices ? (BN / 4) : (BN / 2);
->
-> -        if (enable_smaller_matrices && ic * BN + BNover2 >= _ne1) {
-> +        if (ic * BN + BNover2 >= _ne1) {
-> ```
->
-> So `BN/2` is now the default, while `BN/4` stays gated by `enable_smaller_matrices`:
->
-> ```text
-> BN/2: always available
-> BN/4: only when enable_smaller_matrices is true
-> ```
->
-> | path | before | after |
-> | --- | --- | --- |
-> | MMID `l` BN=128 flag=1 | `/4=32`, `/2=64` | unchanged |
-> | MMID `s` BN=64 flag=0 | full 64 | new `/2=32` |
-> | MMID `m` BN=64 flag=0 | full 64 | new `/2=32` (selector-unreachable) |
-> | regular `MUL_MAT` / `p.N` | original | unchanged |
-> | vec path `B<=8` | vec | unchanged |
-> | selector / Q / G / AWork | original | unchanged |
->
-> The C++ candidates, `BN/4` branch condition, and `p.N` path are unchanged. The `p.N` path is unaffected because its condition still has the `enable_smaller_matrices` gate.
+## SG-Amadeus Vulkan branch
+
+### Overview
+
+`MUL_MAT_ID` uses the coopmat2 `s` tile (`BN = 64`) for small batch sizes, but the last N-block previously always ran at full width even when the tail fit in 32 rows.
+
+The existing smaller-matrix policy cannot be enabled directly because it would also enable `BN/4 = 16`, which fails `MUL_MAT_ID` correctness tests. In the `MUL_MAT_ID` path, `BN/2` is now always available, while `enable_smaller_matrices` continues to control the additional `BN/4` path:
+
+```text
+tail <= 32 -> 32
+tail >  32 -> 64
+```
+
+The existing `l` tile behavior, MMID selector, `Q`, `AWork`, dispatch count, and `p.N` path are unchanged. `B = 1..8` uses the vec path and is unaffected.
+
+### Work record
+
+This work was submitted as [PR #28923 - `vulkan : use BN/2 tail for MMID coopmat2 s tile`](https://github.com/ggml-org/llama.cpp/pull/28923) and has been merged upstream.
+
+| Date | Pull request | Work branch | Merged into | Status | Merge commit |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-16 | [#28923](https://github.com/ggml-org/llama.cpp/pull/28923) | [`vulkan/mmid-bn64-tail32`](https://github.com/SG-Amadeus/llama.cpp/tree/vulkan/mmid-bn64-tail32) (`9bb7487`) | `ggml-org/llama.cpp:master` | Merged | `d4365d9` |
+
+### Change summary
+
+The merged branch changes three lines in `mul_mm_cm2.comp`, without introducing a new variable:
+
+```diff
+-const uint BNover2 = enable_smaller_matrices ? (BN / 2) : BN;
++const uint BNover2 = BN / 2;
+-const uint BNover4 = enable_smaller_matrices ? (BN / 4) : BN;
++const uint BNover4 = enable_smaller_matrices ? (BN / 4) : (BN / 2);
+
+-        if (enable_smaller_matrices && ic * BN + BNover2 >= _ne1) {
++        if (ic * BN + BNover2 >= _ne1) {
+```
+
+`BN/2` is therefore always available, while `BN/4` remains gated by `enable_smaller_matrices`:
+
+```text
+BN/2: always available
+BN/4: only when enable_smaller_matrices is true
+```
+
+| Path | Before | After |
+| --- | --- | --- |
+| MMID `l`, `BN=128`, flag=1 | `/4=32`, `/2=64` | unchanged |
+| MMID `s`, `BN=64`, flag=0 | full 64 | tail can use `/2=32` |
+| MMID `m`, `BN=64`, flag=0 | full 64 | tail can use `/2=32` (selector-unreachable) |
+| Regular `MUL_MAT` / `p.N` | original | unchanged |
+| Vec path, `B<=8` | vec | unchanged |
+| MMID selector / `Q` / `AWork` / dispatch count | original | unchanged |
+
+The C++ candidates, `BN/4` branch condition, and `p.N` path are unchanged. This work builds on the smaller-matrix path introduced in #12312 and its existing MMID use in #15546.
+
+### Validation
+
+```text
+test-backend-ops test -o MUL_MAT_ID
+921/921 tests passed
+```
+
+Performance was tested on an RTX 5070 Ti 16 GB with locked clocks and fully resident models:
+
+```bash
+llama-bench -m <model> -ngl 99 -p 512 -b 9,12,16,20,24,28,32,40,48,56,64 -n 0 -r 20
+```
+
+| Model | Quant | Test | Avg PP gain |
+| --- | --- | --- | ---: |
+| DeepSeek-V2-Lite | Q5_K_M | PP512 | +4.30% |
+| Qwen3-16B-A3B | Q6_K | PP512 | +3.89% |
+| Moonlight-16B-A3B | Q6_K | PP512 | +4.79% |
+
+### Requirements
+
+- I have read and agree with the [contributing guidelines](https://github.com/ggml-org/llama.cpp/blob/master/CONTRIBUTING.md)
+- AI usage disclosure: Yes, for issue analysis and writing code.
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
